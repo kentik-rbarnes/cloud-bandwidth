@@ -8,15 +8,19 @@ server-port: 5201
 # address of the graphite/grafana stack running in a container (docker for mac uses localhost).
 # for a setup beyond a dev environment, grafana-address will be a routable/reachable address
 # that the polling host can connect to in order to run the client/server test.
+# tsdb-type can be either "grafana" or "influx"
+tsdb-type: influx
+influx-url: https://grpc.api.kentik.com/kmetrics/v202207/metrics/api/v2/write?bucket=&org=&precision=ns
+influx-port: 443
 grafana-address: localhost
 grafana-port: 2003
 # the prefix of the stored tsdb data in graphite
 tsdb-download-prefix: bandwidth.download
 tsdb-upload-prefix: bandwidth.upload
+measurement-name: iperf3
 iperf-servers:
-  - 172.17.0.3: azure
-  - 172.17.0.4: digitalocean
-  - 172.17.0.5: colo_datacenter_xyz
+  - 192.168.68.87: ubuntu
+  - 192.168.68.88: ubuntu-server-dc-2
 # iperf-servers are the remote iperf servers getting polled
 # the key is the address getting polled
 # the value (after the colon) is the name that will show up in grafana

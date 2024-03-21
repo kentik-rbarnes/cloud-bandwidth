@@ -23,6 +23,7 @@ func splitPerfPair(tunnelDestInput string) []string {
 // convertKbitsToBits iperf3 no longer supports bps, so convert Kbps to bps for tsdb plotting.
 func convertKbitsToBits(kbps string) (int, error) {
 	// round the number to remove any decimals.
+	log.Debugf("kbps : %s", kbps)
 	float, err := strconv.ParseFloat(kbps, 32)
 	if err != nil {
 		return 0, err

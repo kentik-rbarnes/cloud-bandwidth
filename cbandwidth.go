@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -21,10 +23,14 @@ type configuration struct {
 	ServerPort       string    `yaml:"server-port"`
 	TsdbServer       string    `yaml:"grafana-address"`
 	TsdbPort         string    `yaml:"grafana-port"`
+	InfluxURL        string    `yaml:"influx-url"`
 	TsdbDownPrefix   string    `yaml:"tsdb-download-prefix"`
 	TsdbUpPrefix     string    `yaml:"tsdb-upload-prefix"`
 	PerfServers      []servers `yaml:"iperf-servers"`
+	MeasurementName  string    `yaml:"measurement-name"`
 	GraphiteHostPort string
+	TsdbHostPort     string
+	Hostname         string
 }
 
 type servers map[string]string
@@ -52,14 +58,18 @@ type flags struct {
 	configPath     string
 	imageRepo      string
 	perfServers    string
+	tsdbType       string
 	grafanaServer  string
 	grafanaPort    string
+	influxURL      string
 	testInterval   string
 	testLength     string
 	parallelConn   string
 	perfServerPort string
 	downloadPrefix string
 	uploadPrefix   string
+	kentikEmail    string
+	kentikToken    string
 	netperf        bool
 	noContainer    bool
 	debug          bool
@@ -93,6 +103,13 @@ func main() {
 				EnvVars:     []string{"CBANDWIDTH_PERF_SERVERS"},
 			},
 			&cli.StringFlag{
+				Name:        "tsdbtype",
+				Value:       "",
+				Usage:       "type of tsdb to use. accepts 'influx' as input to override default grafana outputs",
+				Destination: &cliFlags.tsdbType,
+				EnvVars:     []string{"CBANDWIDTH_TSDB_TYPE"},
+			},
+			&cli.StringFlag{
 				Name:        "grafana-address",
 				Value:       "",
 				Usage:       "address of the grafana/carbon server",
@@ -105,6 +122,13 @@ func main() {
 				Usage:       "address of the grafana/carbon port",
 				Destination: &cliFlags.grafanaPort,
 				EnvVars:     []string{"CBANDWIDTH_GRAFANA_PORT"},
+			},
+			&cli.StringFlag{
+				Name:        "influx-url",
+				Value:       "",
+				Usage:       "address of the influx server",
+				Destination: &cliFlags.influxURL,
+				EnvVars:     []string{"CBANDWIDTH_INFLUX_ADDRESS"},
 			},
 			&cli.StringFlag{
 				Name:        "test-interval",
@@ -147,6 +171,20 @@ func main() {
 				Usage:       "the upload prefix of the stored tsdb data in graphite, not applicable for netperf",
 				Destination: &cliFlags.uploadPrefix,
 				EnvVars:     []string{"CBANDWIDTH_UPLOAD_PREFIX"},
+			},
+			&cli.StringFlag{
+				Name:        "kentik-email",
+				Value:       "",
+				Usage:       "email address used for Kentik Portal login",
+				Destination: &cliFlags.kentikEmail,
+				EnvVars:     []string{"CBANDWIDTH_KENTIK_EMAIL"},
+			},
+			&cli.StringFlag{
+				Name:        "kentik-token",
+				Value:       "",
+				Usage:       "API token used for Kentik Portal login",
+				Destination: &cliFlags.kentikToken,
+				EnvVars:     []string{"CBANDWIDTH_KENTIK_TOKEN"},
 			},
 			&cli.BoolFlag{
 				Name:        "netperf",
@@ -195,7 +233,7 @@ func runApp() {
 	}
 
 	// read in the yaml configuration from configuration.yaml
-	configFileData, err := ioutil.ReadFile(cliFlags.configPath)
+	configFileData, err := os.ReadFile(cliFlags.configPath)
 	if err != nil {
 		log.Info("no configuration file found, defaulting to command line arguments")
 		configFilePresent = false
@@ -211,6 +249,18 @@ func runApp() {
 
 	// check the configuration file first for the configuration files values, fallback to the CLI values otherwise
 	if configFilePresent {
+		// check for new flag influx to write out Influx format to external HTTP endpoint
+		if cliFlags.tsdbType == "influx" {
+			if cliFlags.influxURL != "" {
+				// override the config file with cliflag
+				config.InfluxURL = cliFlags.influxURL
+			} else {
+				if config.InfluxURL == "" {
+					log.Fatal("tsdbType indicated as 'influx' but no Influx URL was passed")
+				}
+			}
+			log.Errorf("Influx Selected : %s", config.InfluxURL)
+		}
 		if cliFlags.grafanaServer != "" {
 			config.GraphiteHostPort = net.JoinHostPort(cliFlags.grafanaServer, cliFlags.grafanaPort)
 		} else {
@@ -235,11 +285,21 @@ func runApp() {
 	}
 
 	// assign the grafana server from the CLI
-	if config.GraphiteHostPort == "" {
-		if cliFlags.grafanaServer == "" {
-			log.Warn("No Grafana server was passed to the app, tests will still run, but will not be able to write to a grafana server")
+	if cliFlags.tsdbType != "influx" {
+		if config.GraphiteHostPort == "" {
+			if cliFlags.grafanaServer == "" {
+				log.Warn("No Grafana server was passed to the app, tests will still run, but will not be able to write to a grafana server")
+			} else {
+				config.GraphiteHostPort = net.JoinHostPort(cliFlags.grafanaServer, cliFlags.grafanaPort)
+			}
+		}
+	}
+	// assign the influx server from the CLI
+	if config.InfluxURL == "" {
+		if cliFlags.influxURL == "" {
+			log.Warn("No influx URL was passed to the app, tests will still run but will not be able to write to an influx endpoint")
 		} else {
-			config.GraphiteHostPort = net.JoinHostPort(cliFlags.grafanaServer, cliFlags.grafanaPort)
+			config.InfluxURL = cliFlags.influxURL
 		}
 	}
 
@@ -251,9 +311,21 @@ func runApp() {
 			config.PerfServers = append(config.PerfServers, perfServerMap)
 		}
 	}
+
+	// get our hostname to add to reported measurements
+	hostname, err := os.Hostname()
+	if err != nil {
+		log.Error(err)
+	} else {
+		config.Hostname = hostname
+	}
 	// Log configuration parameters for debugging
 	log.Debug("Configuration as follows:")
+	log.Debugf("Hostname = %s", hostname)
 	log.Debugf("[Config] Grafana Server = %s", config.GraphiteHostPort)
+	log.Debugf("[Config] Influx URL = %s", config.InfluxURL)
+	log.Debugf("[Config] KentikEmail = %s", cliFlags.kentikEmail)
+	log.Debugf("[Config] KentikToken = %s", cliFlags.kentikToken)
 	log.Debugf("[Config] Test Interval = %ssec", cliFlags.testInterval)
 	log.Debugf("[Config] Test Length = %ssec", cliFlags.testLength)
 	log.Debugf("[Config] TSDB download prefix = %s", cliFlags.downloadPrefix)
@@ -312,8 +384,20 @@ func iperfRun(config configuration) {
 					// Write the download results to the tsdb.
 					log.Infof("Download results for endpoint %s [%s] -> %d bps", endpointAddress, endpointName, iperfDownResultsBbps)
 					timeDownNow := time.Now().Unix()
-					msg := fmt.Sprintf("%s.%s %d %d\n", cliFlags.downloadPrefix, endpointName, iperfDownResultsBbps, timeDownNow)
-					sendGraphite("tcp", config.GraphiteHostPort, msg)
+					if cliFlags.tsdbType != "influx" {
+						msg := fmt.Sprintf("%s.%s %d %d\n", cliFlags.downloadPrefix, endpointName, iperfDownResultsBbps, timeDownNow)
+						sendGraphite("tcp", config.GraphiteHostPort, msg)
+					} else {
+						msg := fmt.Sprintf("%s,testType=%s,iperfDestination=%s,iperfSource=%s iperfResultsBps=%d",
+							config.MeasurementName,
+							cliFlags.downloadPrefix,
+							endpointName,
+							config.Hostname,
+							iperfDownResultsBbps,
+						)
+						log.Errorf("url: %s : payload: %s", config.InfluxURL, msg)
+						sendInflux(config.InfluxURL, msg)
+					}
 				}
 
 				// Test the upload speed to the iperf endpoint.
@@ -339,8 +423,19 @@ func iperfRun(config configuration) {
 					// Write the upload results to the tsdb.
 					log.Infof("Upload results for endpoint %s [%s] -> %d bps", endpointAddress, endpointName, iperfUpResultsBbps)
 					timeUpNow := time.Now().Unix()
-					msg := fmt.Sprintf("%s.%s %d %d\n", cliFlags.uploadPrefix, endpointName, iperfUpResultsBbps, timeUpNow)
-					sendGraphite("tcp", config.GraphiteHostPort, msg)
+					if cliFlags.tsdbType != "influx" {
+						msg := fmt.Sprintf("%s.%s %d %d\n", cliFlags.uploadPrefix, endpointName, iperfUpResultsBbps, timeUpNow)
+						sendGraphite("tcp", config.GraphiteHostPort, msg)
+					} else {
+						msg := fmt.Sprintf("%s,testType=%s,iperfDestination=%s,iperfSource=%s iperfResultsBps=%d", config.MeasurementName,
+							cliFlags.uploadPrefix,
+							endpointName,
+							config.Hostname,
+							iperfUpResultsBbps,
+						)
+						log.Errorf("url: %s : payload: %s", config.InfluxURL, msg)
+						sendInflux(config.InfluxURL, msg)
+					}
 				}
 			}
 		}
@@ -403,8 +498,20 @@ func netperfRun(config configuration) {
 					// Write the download results to the tsdb.
 					log.Infof("Download results for endpoint %s [%s] -> %d bps", endpointAddress, endpointName, iperfDownResultsBbps)
 					timeDownNow := time.Now().Unix()
-					msg := fmt.Sprintf("%s.%s %d %d\n", cliFlags.downloadPrefix, endpointName, iperfDownResultsBbps, timeDownNow)
-					sendGraphite("tcp", config.GraphiteHostPort, msg)
+					if cliFlags.tsdbType != "influx" {
+						msg := fmt.Sprintf("%s.%s %d %d\n", cliFlags.downloadPrefix, endpointName, iperfDownResultsBbps, timeDownNow)
+						sendGraphite("tcp", config.GraphiteHostPort, msg)
+					} else {
+						msg := fmt.Sprintf("%s,testType=%s,iperfDestination=%s,iperfSource=%s iperfDownloadResultsBps=%d",
+							config.MeasurementName,
+							cliFlags.downloadPrefix,
+							endpointName,
+							config.Hostname,
+							iperfDownResultsBbps,
+						)
+						log.Errorf("url: %s : payload: %s", config.InfluxURL, msg)
+						sendInflux(config.InfluxURL, msg)
+					}
 				}
 			}
 		}
@@ -446,6 +553,37 @@ func sendGraphite(connType string, socket string, msg string) {
 			log.Errorf("Error writing to the graphite server at -> [%s]", socket)
 		}
 	}
+}
+
+// sendInflux write results to an HTTP endpoint in Influx Line Format
+func sendInflux(influxURL string, msg string) (err error) {
+	req, err := http.NewRequest("POST", influxURL, bytes.NewBufferString(msg))
+	if err != nil {
+		log.Errorf("Error constructing URI : %s %s", influxURL, msg)
+		return err
+	}
+	req.Header.Add("Content-Type", "application/influx")
+	req.Header.Add("X-CH-Auth-Email", cliFlags.kentikEmail)
+	req.Header.Add("X-CH-Auth-API-Token", cliFlags.kentikToken)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Errorf("Could not connect to the Influx endpoint -> [%s]", influxURL)
+		log.Errorf("Verify the Influx server is running and reachable at %s", influxURL)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	//_, err = fmt.Fprint(resp, msg)
+	log.Infof("StatusCode: %d", resp.StatusCode)
+	log.Infof("Status: %s", resp.Status)
+	log.Infof("Body: %s", resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+	log.Debug(string([]byte(body)))
+	return
 }
 
 // checkContainerRuntime checks for docker or podman.
