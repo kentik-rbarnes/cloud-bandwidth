@@ -117,6 +117,53 @@ you then make a graph for. You can view all endpoints in the time-series databas
 or `bandwidth.upload.*` from within the Grafana UI. It's pretty easy to get the hang of by playing around with the demo data 
 and grafana template included that you can import.
 
+#### Kentik Support for Influx Line Format
+Support for exporting received data to Kentik Metrics Explorer is now possible by providing your KentikEmail and API Token as a CLI flag during launch.
+
+For MacOSX support (ARM64/M2) the existing iperf3 containers hosted at quay.io did not support this architecture so I chose to install iperf3 directly using [Homebrew](https://brew.sh). 
+```
+brew install iperf3
+```
+
+Then go ahead and modify the config.yaml to include your desired test endpoints, or supply them via CLI (these are merged together FYI ```--perf-servers 192.168.68.87:ubuntu``` for example), and dynamically run our Go code in a containerless fashion using the following command.
+```
+go run ./*.go --tsdbtype influx \
+  --nocontainer \
+  --debug \
+  --configuration config.yaml \
+  --kentik-email <username@domain.com> \
+  --kentik-token <obfuscated>
+```
+
+If you get a successful test result and POST you should see something like the following output if you're using the --debug flag. 
+Note the StatusCode 204 as a measure of success here.
+```
+ERRO[0000] Influx Selected : https://grpc.api.kentik.com/kmetrics/v202207/metrics/api/v2/write?bucket=&org=&precision=ns 
+DEBU[0000] Configuration as follows:                    
+DEBU[0000] Hostname = Ryans-MacBook-Pro-M2.local        
+DEBU[0000] [Config] Grafana Server = localhost:2003     
+DEBU[0000] [Config] Influx URL = https://grpc.api.kentik.com/kmetrics/v202207/metrics/api/v2/write?bucket=&org=&precision=ns 
+DEBU[0000] [Config] KentikEmail = <user@domain.com>    
+DEBU[0000] [Config] KentikToken = <obfuscated> 
+DEBU[0000] [Config] Test Interval = 300sec              
+DEBU[0000] [Config] Test Length = 5sec                  
+DEBU[0000] [Config] TSDB download prefix = bandwidth.download 
+DEBU[0000] [Config] TSDB upload prefix = bandwidth.upload 
+DEBU[0000] [Config] Perf Server = 192.168.68.87:ubuntu  
+DEBU[0000] [Config] Perf Server = 192.168.68.88:ubuntu-server-dc-2 
+DEBU[0000] [Config] Perf Binary = 5201                  
+DEBU[0000] [Config] Perf Server Port = 5201             
+DEBU[0000] [CMD] Running Command -> [-c iperf3 -P 1 -t 5 -f k -p 5201 -c 192.168.68.87 | tail -n 3 | head -n1 | awk '{print $7}'] 
+DEBU[0005] kbps : 331144                                
+INFO[0005] Download results for endpoint 192.168.68.87 [ubuntu] -> 331144000 bps 
+ERRO[0005] url: https://grpc.api.kentik.com/kmetrics/v202207/metrics/api/v2/write?bucket=&org=&precision=ns : payload: iperf3,testType=bandwidth.download,iperfDestination=ubuntu,iperfSource=Ryans-MacBook-Pro-M2.local iperfResultsBps=331144000 
+INFO[0005] StatusCode: 204                              
+INFO[0005] Status: 204 No Content 
+```
+
+Now if you go look in the Kentik Portal under Metrics Explorer, if the POST was successful you should start to see a new measurement called "iperf3"  which has been defined in the config.yaml file you provided during launch.
+
+
 ## Quickstart with Real Bandwidth
 
 Once you have some test data being feed into the carbon receiver, next let's measure some real bandwidth. First, if you haven't 
