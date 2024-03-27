@@ -163,6 +163,9 @@ INFO[0005] Status: 204 No Content
 
 Now if you go look in the Kentik Portal under Metrics Explorer, if the POST was successful you should start to see a new measurement called "iperf3"  which has been defined in the config.yaml file you provided during launch.
 
+![image](https://github.com/kentik-rbarnes/cloud-bandwidth/assets/124738153/e0d5785d-7bac-4e62-ac45-e70d316fe868)
+
+
 
 ## Quickstart with Real Bandwidth
 
