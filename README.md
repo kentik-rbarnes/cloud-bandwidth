@@ -117,15 +117,24 @@ you then make a graph for. You can view all endpoints in the time-series databas
 or `bandwidth.upload.*` from within the Grafana UI. It's pretty easy to get the hang of by playing around with the demo data 
 and grafana template included that you can import.
 
-#### Kentik Support for Influx Line Format
-Support for exporting received data to Kentik Metrics Explorer is now possible by providing your KentikEmail and API Token as a CLI flag during launch.
+### Kentik Support for Influx Line Format
+Support for exporting received data to Kentik Metrics Explorer is now possible by providing your KentikEmail and API Token as a CLI flag during launch. For the purposes of this test, I'm running two Ubuntu VMs 
 
-For MacOSX support (ARM64/M2) the existing iperf3 containers hosted at quay.io did not support this architecture so I chose to install iperf3 directly using [Homebrew](https://brew.sh). 
+#### Start your iPerf3 Server(s)
+From your Ubuntu VM(s). These IPs will be your targets for your single client which will run the test bi-directionally to each listening server. 
+```docker run -it --restart=always --name=iperf3-server2 -p 5201:5201  networkstatic/iperf3 -s```
+
+#### Start your iPerf3 Client
+1. Clone a copy of this repository onto a VM or server of your choice. This version is patched to allow for HTTP Influx POST to Kentik NMS. 
+   ```git clone https://github.com/kentik-rbarnes/cloud-bandwidth.git```
+
+
+If you're planning to use your macbook. MacOSX support (ARM64/M2) the pre-built iperf3 containers hosted at quay.io where this project is forked from did *not* support the M1/M2 architecture so I chose to just install iperf3 directly using [Homebrew](https://brew.sh) since we're going to run the client containerless. If you're running this on another Ubuntu VM you can just install using ```sudo apt install iperf3```.
 ```
 brew install iperf3
 ```
 
-Then go ahead and modify the config.yaml to include your desired test endpoints, or supply them via CLI (these are merged together FYI ```--perf-servers 192.168.68.87:ubuntu``` for example), and dynamically run our Go code in a containerless fashion using the following command.
+Go ahead and modify the config.yaml to include your desired test endpoints, or supply them via CLI (these are merged together FYI ```--perf-servers 192.168.68.87:ubuntu``` for example), and dynamically run our Go code in a containerless fashion using the following command.
 ```
 go run ./*.go --tsdbtype influx \
   --nocontainer \
@@ -135,7 +144,8 @@ go run ./*.go --tsdbtype influx \
   --kentik-token <obfuscated>
 ```
 
-If you get a successful test result and POST you should see something like the following output if you're using the --debug flag. 
+This should read the local .go files in the repository, compile and execute with the debug flag. 
+If you get a successful test result (204) for your POST you should see something like the following output if you're using the --debug flag. 
 Note the StatusCode 204 as a measure of success here.
 ```
 ERRO[0000] Influx Selected : https://grpc.api.kentik.com/kmetrics/v202207/metrics/api/v2/write?bucket=&org=&precision=ns 
